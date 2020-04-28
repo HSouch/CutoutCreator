@@ -39,12 +39,12 @@ For a directory of images using multiple threads:
 
 Note that these tests were run on a somewhat slower partition on my local machine. YMMV.
 
-413 cutouts from a catalog of 68736 potential objects. No masking. : 19 seconds.
+413 cutouts from a catalog of 68736 potential objects. No masking.  **19 seconds**
 
-959 cutouts from a catalog of 164342 potential objects. No masking : 39 seconds.
+959 cutouts from a catalog of 164342 potential objects. No masking. **39 seconds**
 
-413 cutouts from a catalog of 68736 potential objects. Masking applied.  : 76 seconds.
+413 cutouts from a catalog of 68736 potential objects. Masking applied.  **76 seconds**
 
-959 cutouts from a catalog of 164342 potential objects. Masking applied. : 154 seconds.
+959 cutouts from a catalog of 164342 potential objects. Masking applied. **154 seconds**
 
 It can be seen that the amount of time required scales mostly linearly with a larger catalog. Masking drastically increases the time required, by approximately a factor of 4.
