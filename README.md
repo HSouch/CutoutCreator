@@ -34,3 +34,17 @@ For a directory of images using multiple threads:
 ```-i --isolated FLOAT``` Select a percentage threshold of allowed masked pixels (between 0 and 1) in order to save images. This is useful if one is looking for isolated objects. 
 
 ```--maskparams STR "(FLOAT, FLOAT, INT)"``` Define the parameters for masking. These are the values ```nsigma, gauss_width, npixels``` which define the snr required to be a detected object, the width of the gaussian convolution kernel used in masking, and the minimum number of pixels required for a cluster of pixels to be a detection. These can be adjusted to increase or decrease the severity of the masking procedure.
+
+## Speed Benchmarks
+
+Note that these tests were run on a somewhat slower partition on my local machine. YMMV.
+
+413 cutouts from a catalog of 68736 potential objects. No masking. : 19 seconds.
+
+959 cutouts from a catalog of 164342 potential objects. No masking : 39 seconds.
+
+413 cutouts from a catalog of 68736 potential objects. Masking applied.  : 76 seconds.
+
+959 cutouts from a catalog of 164342 potential objects. Masking applied. : 154 seconds.
+
+It can be seen that the amount of time required scales mostly linearly with a larger catalog. Masking drastically increases the time required, by approximately a factor of 4.
