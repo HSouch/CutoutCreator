@@ -230,7 +230,7 @@ global_verbose = False
 global_batch = False
 global_multithread = False
 global_mask = False
-cutout_size = 41
+cutout_size = 61
 config_filename = ""
 output_subdirectory = ""
 
@@ -344,9 +344,6 @@ def process_arguments():
         global_gauss_width = float(splits[1])
         global_npixels = int(splits[2])
 
-        print(global_nsigma, global_gauss_width, global_npixels)
-
-        exit(0)
 
     return args
 
@@ -389,12 +386,12 @@ def process(img_filename, cat_filename):
     return None
 
 
-def process_image(catalogue, img_filename, cutout_size=cutout_size):
+def process_image(catalogue, img_filename):
     """ Run fitting routine on an image. """
 
     # Get the filename of the image without any path information
     img_filename_no_path = img_filename.split("/")[len(img_filename.split("/")) - 1]
-    print("Processing:\t", img_filename_no_path)
+    print("Processing:\t", img_filename_no_path, "\t", len(catalogue), "potential objects.")
     # Check for tract info, and gather objects that will be considered for fitting ###################################
     valid_indices = range(0, len(catalogue))
 
@@ -452,7 +449,12 @@ def process_image(catalogue, img_filename, cutout_size=cutout_size):
 
                 # Do an isolation check if requested
                 if check_isloated:
+
+                    if extra_params["N_MASKED"] == 0:
+                        continue
+
                     masked_percent = extra_params["N_MASKED"] / (cutout.shape[0] * cutout.shape[1])
+
                     extra_params["P_MASKED"] = masked_percent
                     if masked_percent > masked_threshold:
                         continue
