@@ -1,6 +1,8 @@
 # CutoutCreator
 A simple, effective tool for generating cutouts of objects in astronomical imaging. 
 
+What is required are images with valid WCS information, and a catalogue of objects.
+
 ## Quick Start
 
 For a single image:
