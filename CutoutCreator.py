@@ -12,6 +12,10 @@ try:
     import logging
     from pathlib import Path
 
+    warnings.filterwarnings("ignore")
+
+    import skimage
+
     import multiprocessing as mp
 
     from astropy.io import fits
@@ -22,8 +26,7 @@ try:
     from astropy.convolution import Gaussian2DKernel
 
     from photutils import detect_threshold, detect_sources, deblend_sources
-
-    from numpy import copy, floor, ndarray, median, sqrt, mean, array, asarray
+    from numpy import copy, floor, ndarray, median, sqrt, mean, array, asarray, max, round
 
 
 except ImportError:
@@ -99,7 +102,6 @@ def get_arc_conv(w: wcs.WCS):
     diff_1 = abs(ra_1 - ra_2) * 3600
     diff_2 = abs(dec_1 - dec_2) * 3600
     return (diff_1 + diff_2) / 2
-
 
 
 def generate_cutout(image, position, img_wcs=None, size=91, world_coords=True):
@@ -198,61 +200,26 @@ def mask_cutout(cutout, nsigma=1., gauss_width=2.0, npixels=5):
     return cutout_copy, mask_data
 
 
-
-def estimate_background(cutout: ndarray):
-    """
-    Estimates the background for a cutout using the super-pixel method.
-    Method is loosely derived from the method used for sky-subtraction of the HSC 2nd Public Data Release
-    (Aihara et al, 2019).
-    """
-
-    sigma = 5.0 * gaussian_fwhm_to_sigma
-    kernel = Gaussian2DKernel(sigma)
-    kernel.normalize()
-
-    # Generate Thresholds for background estimation
-    threshold = detect_threshold(cutout, snr=0.5)
-
-    # Make segment object
-    segments = detect_sources(cutout, threshold, npixels=3, filter_kernel=kernel)
-
-    # Attempt to deblend. Don't do anything and continue with original segmentation map upon failure.
-    try:
-        deb_segments = deblend_sources(cutout, segments, npixels=5, filter_kernel=kernel)
-    except:
-        deb_segments = segments
-
-    # Prepare segment array (pull out the raw data from the deblended segmentation object)
-    segment_array = deb_segments.data
-
+def estimate_background(cutout):
+    """ Simple background detecting using super-pixel method"""
     x_step = int(cutout.shape[0] / 10)
     y_step = int(cutout.shape[1] / 10)
-    lowest_median, bg_rms = 999, 999
 
-    # Determine median for each super pixel. Check if median is current lowest and also calculate RMS
+    super_pixel_medians, super_pixel_rms_vals = [], []
+
     for x in range(0, cutout.shape[0] - x_step, x_step):
         for y in range(0, cutout.shape[1] - y_step, y_step):
-            super_pixel = cutout[y:y + y_step, x:x + x_step]
-            segment_section = segment_array[y:y + y_step, x:x + x_step]
+            super_pixel = cutout[y: y + y_step, x: x + x_step]
 
             super_pixel_contents = []
             for m in range(0, super_pixel.shape[0]):
                 for n in range(0, super_pixel.shape[1]):
-                    if segment_section[m][n] == 0:
-                        super_pixel_contents.append(super_pixel[m][n])
+                    super_pixel_contents.append(super_pixel[m][n])
 
-            if len(super_pixel_contents) == 0:
-                continue
+            super_pixel_medians.append(median(super_pixel_contents))
+            super_pixel_rms_vals.append(sqrt((mean(super_pixel_contents) - median(super_pixel_contents)) ** 2))
 
-            super_pixel_median = median(super_pixel_contents)
-
-            if super_pixel_median < lowest_median:
-                lowest_median = super_pixel_median
-                bg_rms = sqrt(mean(array(super_pixel_contents - lowest_median) ** 2))
-
-    # print("BG Estimate:", lowest_median, " | BG RMS:", bg_rms)
-
-    return lowest_median, bg_rms
+    return median(super_pixel_medians), median(super_pixel_rms_vals)
 
 
 ########################################################################################################################
@@ -262,12 +229,16 @@ def estimate_background(cutout: ndarray):
 global_verbose = False
 global_batch = False
 global_multithread = False
-has_tract_info = False
 global_mask = False
 cutout_size = 41
 config_filename = ""
-test_mode = False
 output_subdirectory = ""
+
+check_snr, snr_threshold = False, 0.
+check_isloated, masked_threshold = False, 0.
+
+global_nsigma, global_gauss_width, global_npixels = 1., 2.0, 5
+
 
 ra_key, dec_key = "RA", "DEC"
 
@@ -280,13 +251,15 @@ def process_arguments():
     global global_multithread
     global global_mask
     global has_tract_info
-    global test_mode
     global output_subdirectory
     global ra_key
     global dec_key
     global cutout_size
+    global check_snr, snr_threshold
+    global check_isloated, masked_threshold
+    global global_nsigma, global_gauss_width, global_npixels
 
-    parser = argparse.ArgumentParser(description="Automated cutout creation for astronomical imaging.",
+    parser = argparse.ArgumentParser(description="Automated cutout creation for astronomical imaging. (Version 2.1)",
                                      epilog="Please email hsouchereau@outlook.com for help inquiries or bug reports.")
 
     parser.add_argument("image_filename", type=str,
@@ -296,11 +269,6 @@ def process_arguments():
 
     parser.add_argument("-v", "--verbose",
                         help="Run Koe in Verbose mode", action="store_true")
-
-    parser.add_argument("-t", "--tract",
-                        help="Images have tract/patch information that can be parsed from" +
-                             " their filenames. [Tailored for CLAUDS-HSC data.]",
-                        action="store_true")
 
     parser.add_argument("-b", "--batch",
                         help="Run in batch mode. Will assume image_filename is a path containing many " +
@@ -327,6 +295,16 @@ def process_arguments():
     parser.add_argument("--dec", type=str,
                         help="Declination Column Name in Table")
 
+    parser.add_argument("--snr", type=float,
+                        help="Desired signal to noise ratio to save cutout.")
+
+    parser.add_argument("-i", "--isolated", type=float,
+                        help="Percentage of masked pixels to allow (For isolated objects).")
+
+    parser.add_argument("--maskparams", type=str,
+                        help="Mask parameters, in the form (nsigma, gauss_width, npixels).\n" +
+                        "Example Usage: --maskparams \"(2.0, 1.0, 7)\"")
+
     # Get all input arguments
     args = parser.parse_args()
 
@@ -336,8 +314,6 @@ def process_arguments():
         global_verbose = True
 
     # Check tract, batch, and multi-threading flags
-    if args.tract:
-        has_tract_info = True
     if args.batch:
         global_batch = True
     if args.multi:
@@ -354,6 +330,23 @@ def process_arguments():
         dec_key = args.dec
     if args.cutout_size is not None:
         cutout_size = args.cutout_size
+    if args.snr is not None:
+        check_snr = True
+        snr_threshold = args.snr
+    if args.isolated is not None:
+        check_isloated = True
+        masked_threshold = args.isolated
+
+    if args.maskparams is not None:
+        splits = str(args.maskparams).split("(")[1].split(")")[0].split(",")
+
+        global_nsigma = float(splits[0])
+        global_gauss_width = float(splits[1])
+        global_npixels = int(splits[2])
+
+        print(global_nsigma, global_gauss_width, global_npixels)
+
+        exit(0)
 
     return args
 
@@ -368,7 +361,6 @@ def process(img_filename, cat_filename):
         if ra_key not in cat.colnames or dec_key not in cat.colnames:
             print("Column names not found. Exiting")
             exit(1)
-
     except (ValueError, FileNotFoundError):
         print("Error while opening catalog. Cannot find file from input, or the filename is an empty directory.")
         return
@@ -405,15 +397,6 @@ def process_image(catalogue, img_filename, cutout_size=cutout_size):
     print("Processing:\t", img_filename_no_path)
     # Check for tract info, and gather objects that will be considered for fitting ###################################
     valid_indices = range(0, len(catalogue))
-    if has_tract_info:
-        try:
-            tract, patch = get_tract_and_patch(img_filename_no_path)
-            valid_indices = objects_in_tract(catalogue, tract, patch)
-        except:
-            pass
-    if global_verbose and has_tract_info:
-        print("Found", len(valid_indices), "objects for", img_filename, "out of", len(catalogue), "objects total. " +
-              str(len(valid_indices) * 100 / len(catalogue))[:5] + "%)")
 
     # Load image #####################################################################################################
     img, w = None, None
@@ -451,7 +434,6 @@ def process_image(catalogue, img_filename, cutout_size=cutout_size):
             cutout = generate_cutout(img, (row[ra_key], row[dec_key]),
                                      size=cutout_size, img_wcs=w)
             if cutout.shape[0] != cutout.shape[1]:
-                print(cutout.shape)
                 continue
         except (IndexError, ValueError):
             # Move on to the next objcet if outside of the image boundaries
@@ -459,17 +441,42 @@ def process_image(catalogue, img_filename, cutout_size=cutout_size):
 
         # Mask cutout
         if global_mask:
-            print("yes")
             try:
-                masked_cutout, mask_data = mask_cutout(cutout)
+                masked_cutout, mask_data = mask_cutout(cutout,
+                                                       nsigma=global_nsigma,
+                                                       gauss_width=global_gauss_width,
+                                                       npixels=global_npixels)
 
                 cutout = masked_cutout
                 extra_params.update(mask_data)
+
+                # Do an isolation check if requested
+                if check_isloated:
+                    masked_percent = extra_params["N_MASKED"] / (cutout.shape[0] * cutout.shape[1])
+                    extra_params["P_MASKED"] = masked_percent
+                    if masked_percent > masked_threshold:
+                        continue
+
             except ValueError:
                 if global_verbose:
                     print("Error processing galaxy", index, "due to masking failure.")
                 continue
 
+        # Estimate background and snr
+        bg_est, bg_rms = estimate_background(cutout)
+        snr = max(cutout) / bg_rms
+
+        extra_params["BG_EST"] = bg_est
+        extra_params["BG_RMS"] = bg_rms
+        extra_params["SNR"] = snr
+
+        if check_snr:
+            if snr < snr_threshold:
+                continue
+
+        # print(round(snr, 3), round(masked_percent, 3))
+
+        # Add information to file
         hdr = fits.Header()
         for column in row.colnames:
             if str(row[column]) not in ("nan", "inf"):
@@ -482,6 +489,7 @@ def process_image(catalogue, img_filename, cutout_size=cutout_size):
                 hdr[hdr_key] = -999
         cutout_fits.append(fits.ImageHDU(cutout, header=hdr))
 
+    print(len(cutout_fits), "objects to be saved.")
     # Save cutouts and isotables #######################################################################################
 
     outfile_prefix = str(default_output_dir) + output_subdirectory + img_filename_no_path.split(".")[0]
@@ -511,11 +519,6 @@ cl_args = process_arguments()
 
 image_filename, catalogue_filename = cl_args.image_filename, cl_args.cat_filename
 
-# Print readout of all inputs and variables before processing.
-if global_verbose:
-    print("Image Filename \t\t\t", image_filename + (" (Directory)" if global_batch else ""))
-    print("Catalogue Filename:\t\t", catalogue_filename)
-    print("Batch Mode:\t\t\t", global_batch)
 
 # Make output directory if it isn't made
 default_output_dir = "output/"
@@ -532,7 +535,6 @@ warnings.filterwarnings("ignore")
 process(image_filename, catalogue_filename)
 
 # Print optional output message
-if global_verbose:
-    time_seconds = time.time() - start_time
-    time_minutes = time_seconds / 60
-    print("Time Elapsed:", str(time_seconds)[:6], "seconds (", str(time_minutes)[:6], " minutes).")
+time_seconds = time.time() - start_time
+time_minutes = time_seconds / 60
+print("Time Elapsed:", str(time_seconds)[:6], "seconds (", str(time_minutes)[:6], " minutes).")
