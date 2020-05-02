@@ -26,7 +26,7 @@ try:
     from astropy.convolution import Gaussian2DKernel
 
     from photutils import detect_threshold, detect_sources, deblend_sources
-    from numpy import copy, floor, ndarray, median, sqrt, mean, array, asarray, max, round
+    from numpy import copy, floor, ndarray, median, sqrt, mean, array, asarray, max, round, isnan
 
 
 except ImportError:
@@ -166,22 +166,29 @@ def mask_cutout(cutout, nsigma=1., gauss_width=2.0, npixels=5):
     c_x, c_y = floor(segment_array.shape[0] / 2), floor(segment_array.shape[1] / 2)
     central = segment_array[int(c_x)][int(c_y)]
 
-    # Estimate Background, and min/max values
-    bg_total, bg_pixels, bg_pixel_array = 0, 0, []
-    min_val, max_val, = cutout_copy[0][0], cutout_copy[0][0]
-    for x in range(0, segment_array.shape[0]):
-        for y in range(0, segment_array.shape[1]):
-            if segment_array[x][y] == 0:
-                bg_total += cutout_copy[x][y]
-                bg_pixels += 1
-                bg_pixel_array.append(cutout_copy[x][y])
+    # Estimate background with severe cutout
+    bg_method = 1
+    bg_est, bg_rms = estimate_background(cutout_copy)
 
-    bg_estimate = bg_total / bg_pixels
-    mask_data["BG_EST"] = bg_estimate
-    mask_data["BG_MED"] = median(bg_pixel_array)
+    mask_data["BG_EST"] = bg_est
+    mask_data["BG_RMS"] = bg_rms
     mask_data["N_OBJS"] = segments.nlabels
-    mask_data["MIN_VAL"] = min_val
-    mask_data["MAX_VAL"] = max_val
+    mask_data["BGMETHOD"] = bg_method
+
+    # Use alternative method to try and get a estimate or rms value if first method fails
+    if isnan(bg_est) or isnan(bg_rms):
+        bg_pixel_array = []
+        for x in range(0, segment_array.shape[0]):
+            for y in range(0, segment_array.shape[1]):
+                if segment_array[x][y] == 0:
+                    bg_pixel_array.append(cutout_copy[x][y])
+
+        bg_est = median(bg_pixel_array)
+        bg_rms = sqrt((mean(bg_pixel_array) - bg_est) ** 2)
+
+        bg_method = 2
+
+    print(bg_est, bg_rms, bg_method)
 
     # Return input image if no need to mask
     if segments.nlabels == 1:
@@ -193,15 +200,27 @@ def mask_cutout(cutout, nsigma=1., gauss_width=2.0, npixels=5):
     for x in range(0, segment_array.shape[0]):
         for y in range(0, segment_array.shape[1]):
             if segment_array[x][y] not in (0, central):
-                cutout_copy[x][y] = bg_estimate
+                cutout_copy[x][y] = bg_est
                 num_masked += 1
+
     mask_data["N_MASKED"] = num_masked
 
     return cutout_copy, mask_data
 
 
-def estimate_background(cutout):
+def estimate_background(cutout, nsigma=1, gauss_width=1, npixels=3):
     """ Simple background detecting using super-pixel method"""
+    sigma = gauss_width * gaussian_fwhm_to_sigma
+    kernel = Gaussian2DKernel(sigma)
+    kernel.normalize()
+
+    # Find threshold for cutout, and make segmentation map
+    threshold = detect_threshold(cutout, snr=nsigma)
+    segments = detect_sources(cutout, threshold, npixels=npixels,
+                              filter_kernel=kernel)
+
+    segment_array = segments.data
+
     x_step = int(cutout.shape[0] / 10)
     y_step = int(cutout.shape[1] / 10)
 
@@ -214,13 +233,13 @@ def estimate_background(cutout):
             super_pixel_contents = []
             for m in range(0, super_pixel.shape[0]):
                 for n in range(0, super_pixel.shape[1]):
-                    super_pixel_contents.append(super_pixel[m][n])
+                    if segment_array[m][n] == 0:
+                        super_pixel_contents.append(super_pixel[m][n])
 
             super_pixel_medians.append(median(super_pixel_contents))
             super_pixel_rms_vals.append(sqrt((mean(super_pixel_contents) - median(super_pixel_contents)) ** 2))
 
     return median(super_pixel_medians), median(super_pixel_rms_vals)
-
 
 ########################################################################################################################
 # IMAGE PROCESSING METHODS BLOCK #######################################################################################
@@ -268,7 +287,7 @@ def process_arguments():
     parser.add_argument("cat_filename", type=str, help="Filename for the catalogue.")
 
     parser.add_argument("-v", "--verbose",
-                        help="Run Koe in Verbose mode", action="store_true")
+                        help="Run in Verbose mode", action="store_true")
 
     parser.add_argument("-b", "--batch",
                         help="Run in batch mode. Will assume image_filename is a path containing many " +
@@ -343,7 +362,6 @@ def process_arguments():
         global_nsigma = float(splits[0])
         global_gauss_width = float(splits[1])
         global_npixels = int(splits[2])
-
 
     return args
 
@@ -447,6 +465,8 @@ def process_image(catalogue, img_filename):
                 cutout = masked_cutout
                 extra_params.update(mask_data)
 
+                bg_est, bg_rms = mask_data["BG_EST"], mask_data["BG_RMS"]
+
                 # Do an isolation check if requested
                 if check_isloated:
 
@@ -463,13 +483,18 @@ def process_image(catalogue, img_filename):
                 if global_verbose:
                     print("Error processing galaxy", index, "due to masking failure.")
                 continue
+        else:
+            # If not masking, simply run the background estimation. Set to bad flag if nan check
+            bg_est, bg_rms = estimate_background(cutout)
+            if isnan(bg_est):
+                bg_est = -999
+            if isnan(bg_rms):
+                bg_rms = 999
 
-        # Estimate background and snr
-        bg_est, bg_rms = estimate_background(cutout)
+            extra_params["BG_EST"] = bg_est
+            extra_params["BG_RMS"] = bg_rms
+
         snr = max(cutout) / bg_rms
-
-        extra_params["BG_EST"] = bg_est
-        extra_params["BG_RMS"] = bg_rms
         extra_params["SNR"] = snr
 
         if check_snr:
