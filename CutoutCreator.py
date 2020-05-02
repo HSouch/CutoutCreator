@@ -26,7 +26,7 @@ try:
     from astropy.convolution import Gaussian2DKernel
 
     from photutils import detect_threshold, detect_sources, deblend_sources
-    from numpy import copy, floor, ndarray, median, sqrt, mean, array, asarray, max, round, isnan
+    from numpy import copy, floor, ndarray, median, sqrt, mean, array, asarray, max, round, isnan, sort, flip, isinf
 
 
 except ImportError:
@@ -187,8 +187,6 @@ def mask_cutout(cutout, nsigma=1., gauss_width=2.0, npixels=5):
         bg_rms = sqrt((mean(bg_pixel_array) - bg_est) ** 2)
 
         bg_method = 2
-
-    print(bg_est, bg_rms, bg_method)
 
     # Return input image if no need to mask
     if segments.nlabels == 1:
@@ -466,7 +464,8 @@ def process_image(catalogue, img_filename):
                 extra_params.update(mask_data)
 
                 bg_est, bg_rms = mask_data["BG_EST"], mask_data["BG_RMS"]
-
+                if isnan(bg_est) or isnan(bg_rms):
+                    continue
                 # Do an isolation check if requested
                 if check_isloated:
 
@@ -494,7 +493,10 @@ def process_image(catalogue, img_filename):
             extra_params["BG_EST"] = bg_est
             extra_params["BG_RMS"] = bg_rms
 
-        snr = max(cutout) / bg_rms
+        snr = flip(sort(cutout, axis=None))[5] / bg_rms
+        if isinf(snr):
+            continue
+
         extra_params["SNR"] = snr
 
         if check_snr:
