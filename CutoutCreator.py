@@ -511,9 +511,9 @@ def process_image(catalogue, img_filename):
             if str(row[column]) not in ("nan", "inf"):
                 hdr[column] = row[column]
         for key in extra_params:
-            if not isnan(extra_params[key]):
+            try:
                 hdr[key] = extra_params[key]
-            else:
+            except:
                 hdr[key] = -999
 
         for hdr_key in hdr:
