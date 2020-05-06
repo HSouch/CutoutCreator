@@ -126,7 +126,7 @@ def generate_cutout(image, position, img_wcs=None, size=91, world_coords=True):
     if 0 < pix_x < image.shape[0] and 0 < pix_y < image.shape[1]:
         try:
             cut = Cutout2D(image, (pix_x, pix_y), size)
-            return cut.data
+            return cut.data, (pix_x, pix_y)
         except NoOverlapError:
             raise IndexError
     else:
@@ -238,6 +238,7 @@ def estimate_background(cutout, nsigma=1, gauss_width=1, npixels=3):
             super_pixel_rms_vals.append(sqrt((mean(super_pixel_contents) - median(super_pixel_contents)) ** 2))
 
     return median(super_pixel_medians), median(super_pixel_rms_vals)
+
 
 ########################################################################################################################
 # IMAGE PROCESSING METHODS BLOCK #######################################################################################
@@ -444,13 +445,15 @@ def process_image(catalogue, img_filename):
 
         # Make cutout
         try:
-            cutout = generate_cutout(img, (row[ra_key], row[dec_key]),
-                                     size=cutout_size, img_wcs=w)
+            cutout, phyical_loc = generate_cutout(img, (row[ra_key], row[dec_key]), size=cutout_size, img_wcs=w)
             if cutout.shape[0] != cutout.shape[1]:
                 continue
         except (IndexError, ValueError):
             # Move on to the next objcet if outside of the image boundaries
             continue
+
+        extra_params["X"] = phyical_loc[0]
+        extra_params["Y"] = phyical_loc[1]
 
         # Mask cutout
         if global_mask:
