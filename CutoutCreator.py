@@ -445,15 +445,17 @@ def process_image(catalogue, img_filename):
 
         # Make cutout
         try:
-            cutout, phyical_loc = generate_cutout(img, (row[ra_key], row[dec_key]), size=cutout_size, img_wcs=w)
+            cutout, physical_loc = generate_cutout(img, (row[ra_key], row[dec_key]), size=cutout_size, img_wcs=w)
             if cutout.shape[0] != cutout.shape[1]:
                 continue
         except (IndexError, ValueError):
             # Move on to the next objcet if outside of the image boundaries
             continue
 
-        extra_params["X"] = phyical_loc[0]
-        extra_params["Y"] = phyical_loc[1]
+        # print(physical_loc[0], physical_loc[1])
+
+        extra_params["X_LOC"] = float(physical_loc[0])
+        extra_params["Y_LOC"] = float(physical_loc[1])
 
         # Mask cutout
         if global_mask:
