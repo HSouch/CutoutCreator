@@ -115,6 +115,7 @@ def generate_cutout(image, position, img_wcs=None, size=91, world_coords=True):
     :param world_coords:
     :return:
     """
+    cutout_data = {}
 
     if world_coords:
         coord = img_wcs.wcs_world2pix(position[0], position[1], 0, ra_dec_order=True)
@@ -126,7 +127,15 @@ def generate_cutout(image, position, img_wcs=None, size=91, world_coords=True):
     if 0 < pix_x < image.shape[0] and 0 < pix_y < image.shape[1]:
         try:
             cut = Cutout2D(image, (pix_x, pix_y), size)
-            return cut.data, (pix_x, pix_y)
+
+            origin_loc = cut.to_cutout_position((pix_x, pix_y))
+
+            cutout_data["X_LOC"] = float(pix_x)
+            cutout_data["Y_LOC"] = float(pix_y)
+            cutout_data["X_CUT"] = float(origin_loc[0])
+            cutout_data["Y_CUT"] = float(origin_loc[1])
+
+            return cut.data, cutout_data
         except NoOverlapError:
             raise IndexError
     else:
@@ -445,17 +454,14 @@ def process_image(catalogue, img_filename):
 
         # Make cutout
         try:
-            cutout, physical_loc = generate_cutout(img, (row[ra_key], row[dec_key]), size=cutout_size, img_wcs=w)
+            cutout, cutout_data = generate_cutout(img, (row[ra_key], row[dec_key]), size=cutout_size, img_wcs=w)
             if cutout.shape[0] != cutout.shape[1]:
                 continue
         except (IndexError, ValueError):
             # Move on to the next objcet if outside of the image boundaries
             continue
 
-        # print(physical_loc[0], physical_loc[1])
-
-        extra_params["X_LOC"] = float(physical_loc[0])
-        extra_params["Y_LOC"] = float(physical_loc[1])
+        extra_params.update(cutout_data)
 
         # Mask cutout
         if global_mask:
